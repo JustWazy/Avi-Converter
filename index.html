@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta http-equiv="Content-Security-Policy" content="default-src 'self' blob: data: https:; script-src 'self' 'unsafe-eval' 'unsafe-inline' 'wasm-unsafe-eval' blob: https:; worker-src 'self' blob:; connect-src 'self' blob: data: https:; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data: https:;">
-<title>framecrank — ffmpeg di browser</title>
+<title>framecrank — ffmpeg browser based</title>
 <style>
   :root{
     --bg:#0d1210;
@@ -62,7 +62,7 @@
     color:var(--text);
   }
   .brand h1 span{color:var(--phos);}
-  .brand p{margin:0;color:var(--text-dim);font-size:13px;max-width:46ch;line-height:1.5;}
+  .brand p{margin:0;color:var(--text-dim);font-size:13px;max-width:50ch;line-height:1.5;}
   .reel{
     display:flex;align-items:center;gap:10px;
     font-size:12px;color:var(--text-dim);
@@ -110,6 +110,10 @@
     font-weight:600;
     letter-spacing:.02em;
   }
+  .panel .note{
+    font-size:12px;color:var(--text-dim);margin:-6px 0 14px;line-height:1.55;
+  }
+  .panel .note b{color:var(--phos);font-weight:600;}
 
   /* dropzone */
   .drop{
@@ -181,6 +185,7 @@
     word-break:break-all;
   }
   .cmd .rem{color:var(--text-dim);}
+  .cmd-hint{font-size:10.5px;color:var(--text-dim);margin-top:6px;}
 
   /* buttons */
   .btnrow{display:flex;gap:10px;flex-wrap:wrap;margin-top:18px;}
@@ -274,7 +279,7 @@
     <div class="brand">
       <div class="mark">firmware-safe video prep</div>
       <h1>frame<span>crank</span></h1>
-      <p>Konversi &amp; flip video langsung di browser pakai ffmpeg.wasm — tanpa upload ke server. Preset dua-kali transpose+vflip untuk device dengan pemeriksaan orientasi ketat.</p>
+      <p>Konversi &amp; flip video langsung di browser pakai ffmpeg.wasm — tanpa upload ke server. Alur kerja: <b style="color:var(--phos)">pecah dulu sumber jadi beberapa bagian</b> (stream copy, tanpa re-encode), baru tiap bagian dikonversi satu per satu — supaya file besar tidak sekaligus dimuat penuh ke memori encoder.</p>
     </div>
     <div class="reel" id="reelStatus">
       <div class="dot"></div>
@@ -305,9 +310,31 @@
     <video class="preview" id="srcPreview" controls style="display:none;"></video>
   </div>
 
-  <!-- STEP 2: SETTINGS -->
-  <div class="panel" data-idx="02 — parameter output">
+  <!-- STEP 2: SPLIT SOURCE (before conversion) -->
+  <div class="panel" data-idx="02 — split sumber (opsional, disarankan untuk file besar)">
+    <h2>Bagi video sumber sebelum konversi</h2>
+    <p class="note">
+      Dijalankan <b>langsung pada file mentah</b> pakai stream copy (<code>-c copy</code>, tanpa re-encode) — cepat dan nyaris tanpa beban memori.
+      Kalau kamu langsung konversi file besar secara utuh, ffmpeg.wasm harus memuat &amp; mendekode seluruh video sekaligus dan gampang
+      berujung <b>"memory access out of bounds"</b> / worker crash. Dengan memecah sumber jadi beberapa bagian dulu, langkah konversi di bawah
+      cuma perlu memproses satu bagian kecil dalam satu waktu.
+    </p>
+    <div class="split-row">
+      <div class="field">
+        <label>Jumlah bagian</label>
+        <input type="number" id="splitCount" value="5" min="2" max="20">
+      </div>
+      <button id="splitBtn" disabled>Split video sumber</button>
+    </div>
+  </div>
+
+  <!-- STEP 3: CONVERT -->
+  <div class="panel" data-idx="03 — parameter output">
     <h2>Parameter konversi</h2>
+    <p class="note" id="convertModeNote">
+      Belum ada bagian hasil split — tombol di bawah akan mengonversi <b>seluruh file sumber sekaligus</b>. Untuk file besar, disarankan pakai
+      langkah split di atas dulu.
+    </p>
     <div class="grid">
       <div class="field">
         <label>Lebar</label>
@@ -359,7 +386,7 @@
 
     <label class="toggle-row">
       <input type="checkbox" id="trimToggle">
-      Potong durasi (untuk sample cepat)
+      Potong durasi tambahan (untuk sample cepat / trim per-bagian)
     </label>
     <div class="grid" id="trimFields" style="display:none;">
       <div class="field">
@@ -373,6 +400,7 @@
     </div>
 
     <div class="cmd" id="cmdPreview"></div>
+    <div class="cmd-hint" id="cmdHint"></div>
 
     <div class="btnrow">
       <button class="primary" id="runBtn" disabled>Jalankan konversi</button>
@@ -389,19 +417,6 @@
       </div>
     </div>
     <div class="log" id="logBox"></div>
-  </div>
-
-  <!-- STEP 3: SPLIT -->
-  <div class="panel" data-idx="03 — split (opsional)">
-    <h2>Bagi hasil menjadi beberapa bagian</h2>
-    <p style="font-size:12px;color:var(--text-dim);margin-top:-6px;">Split dijalankan setelah konversi selesai, tanpa re-encode (copy stream) — cepat dan tanpa kehilangan kualitas.</p>
-    <div class="split-row">
-      <div class="field">
-        <label>Jumlah bagian</label>
-        <input type="number" id="splitCount" value="5" min="2" max="20">
-      </div>
-      <button id="splitBtn" disabled>Split video hasil</button>
-    </div>
   </div>
 
   <!-- OUTPUT -->
@@ -487,13 +502,22 @@ const outputList = document.getElementById('outputList');
 const stallWarning = document.getElementById('stallWarning');
 const recoverRow = document.getElementById('recoverRow');
 const recoverBtn = document.getElementById('recoverBtn');
+const convertModeNote = document.getElementById('convertModeNote');
 
 let loaded = false;
 let sourceFile = null;
 let sourceName = 'input.mp4';
-let lastOutputName = null;
-let lastOutputDuration = null;
+let sourceExt = 'mp4';
+let sourceBaseName = 'myvideo'; // used to name split/converted files, e.g. myvideo_part1.avi
+let sourceWrittenToFS = false;
 
+// splitParts holds the pieces that step 03 (convert) should iterate over.
+// Each entry is already written into the ffmpeg virtual FS by the split step.
+// If empty, convert falls back to converting the whole source file in one go.
+let splitParts = [];
+
+// duration of whatever input is currently being processed by ffmpeg.exec(),
+// used only for the live progress-bar percentage (reset per job).
 let sourceDurationSec = null;
 
 // ---------- stall watchdog ----------
@@ -550,6 +574,9 @@ recoverBtn.addEventListener('click', async () => {
     log('terminate() gagal (kemungkinan worker sudah mati): ' + describeError(e));
   }
   loaded = false;
+  sourceWrittenToFS = false; // FS is gone after terminate(), must rewrite on next use
+  splitParts = []; // split pieces lived in the now-dead worker's FS too
+  updateConvertModeNote();
   reelStatus.classList.remove('live');
   reelText.textContent = 'memuat ulang ffmpeg…';
   stopStallWatch();
@@ -717,7 +744,18 @@ async function loadFFmpeg(){
 loadFFmpeg();
 
 function updateRunEnabled(){
-  runBtn.disabled = !(loaded && sourceFile);
+  const ready = loaded && !!sourceFile;
+  runBtn.disabled = !ready;
+  splitBtn.disabled = !ready;
+}
+
+function updateConvertModeNote(){
+  if(splitParts.length > 0){
+    convertModeNote.innerHTML = `Ada <b>${splitParts.length} bagian</b> hasil split siap dikonversi. Tombol di bawah akan mengonversi bagian-bagian itu <b>satu per satu</b> (memori tetap kecil per job), bukan seluruh sumber sekaligus.`;
+  } else {
+    convertModeNote.innerHTML = `Belum ada bagian hasil split — tombol di bawah akan mengonversi <b>seluruh file sumber sekaligus</b>. Untuk file besar, disarankan pakai langkah split di atas dulu supaya ffmpeg.wasm tidak kehabisan memori.`;
+  }
+  updateCmdPreview();
 }
 
 // ---------- dropzone ----------
@@ -738,7 +776,14 @@ fileInput.addEventListener('change', e=>{
 
 function handleFile(file){
   sourceFile = file;
-  sourceName = file.name;
+  const extMatch = file.name.match(/\.([a-zA-Z0-9]+)$/);
+  sourceExt = extMatch ? extMatch[1].toLowerCase() : 'mp4';
+  sourceName = 'input.' + sourceExt;
+  sourceBaseName = file.name.replace(/\.[^/.]+$/, '').trim().replace(/\s+/g, '_').replace(/[^a-zA-Z0-9_-]/g, '') || 'myvideo';
+  sourceWrittenToFS = false; // new file => needs (re)writing into ffmpeg FS
+  splitParts = []; // a fresh source invalidates any previous split
+  updateConvertModeNote();
+
   fileInfo.innerHTML = `<div class="filepill">📼 ${file.name} — ${(file.size/1024/1024).toFixed(2)} MB</div>`;
   srcPreview.src = URL.createObjectURL(file);
   srcPreview.style.display = 'block';
@@ -763,17 +808,17 @@ function buildFilterChain(){
   const base = `scale=${w}:${h}`;
   if(orient === 'none') return base;
   if(orient === 'single') return `${base},transpose=2,vflip`;
-  // "double" preset: some firmware needs the transpose+vflip pair applied twice.
-  // BUG FIX: the old chain re-inserted `scale=W:H` between the two passes. By that point
-  // the frame had already been transposed once (dims swapped to HxW), so re-forcing it to
-  // WxH stretched/distorted the image (this is why output came out as 128x160 instead of
-  // 160x128, and why swscale logged "deprecated pixel format" warnings twice). Two transposes
-  // already return the frame to its original WxH on their own — no mid-chain rescale needed.
-  // This also removes a whole extra scale pass, cutting per-frame filter cost significantly.
-  return `${base},transpose=2,vflip,transpose=2,vflip`;
+  // "double" preset: required EXACTLY as-is (scale,transpose,vflip,scale,transpose,vflip) —
+  // this specific strict firmware validates the output against this literal filter chain,
+  // including the mid-chain re-scale. Do not "simplify" this to a single scale + two
+  // transpose/vflip passes even though that looks equivalent — the firmware check depends
+  // on the exact chain below, so it must stay byte-for-byte the same.
+  return `${base},transpose=2,vflip,${base},transpose=2,vflip`;
 }
 
-function buildArgs(outName){
+// inputName/outName are explicit now because convert can run against either the raw
+// source file, or one of several already-split pieces sitting in the ffmpeg FS.
+function buildArgs(inputName, outName){
   const fps = document.getElementById('fps').value;
   const qv = document.getElementById('qv').value;
   const ar = document.getElementById('ar').value;
@@ -785,7 +830,7 @@ function buildArgs(outName){
 
   const args = [];
   if(trim){ args.push('-ss', String(ss)); }
-  args.push('-i', sourceName);
+  args.push('-i', inputName);
   if(trim){ args.push('-t', String(tt)); }
   args.push('-vf', buildFilterChain());
   args.push('-r', String(fps));
@@ -802,125 +847,33 @@ function buildArgs(outName){
 function updateCmdPreview(){
   const fmt = document.getElementById('fmt').value;
   const outName = 'output.' + fmt;
-  const args = buildArgs(outName);
+  const inputName = splitParts.length > 0 ? splitParts[0].name : sourceName;
+  const args = buildArgs(inputName, outName);
   const cmdEl = document.getElementById('cmdPreview');
-  cmdEl.textContent = 'ffmpeg ' + args.map(a => /\s/.test(a) ? `"${a}"` : a).join(' ');
+  // Note: quoting here is purely for display, to match the exact `-vf "..."` shell syntax.
+  // The real ffmpeg.exec() call below passes args as an array (no shell involved), so the
+  // filter string itself never contains literal quote characters — only this preview does.
+  const rendered = args.map((a, i) => {
+    const prev = args[i - 1];
+    if(prev === '-vf' || /\s/.test(a)) return `"${a}"`;
+    return a;
+  }).join(' ');
+  cmdEl.textContent = 'ffmpeg ' + rendered;
+  const hintEl = document.getElementById('cmdHint');
+  hintEl.textContent = splitParts.length > 0
+    ? `diulang untuk tiap ${splitParts.length} bagian (input & nama output berbeda per bagian)`
+    : '';
 }
 updateCmdPreview();
+updateConvertModeNote();
 
-// ---------- run conversion ----------
-runBtn.addEventListener('click', async () => {
-  if(!sourceFile) return;
-  runBtn.disabled = true;
-  progWrap.classList.add('show');
-  progText.textContent = 'menulis file ke memori…';
-  progFill.style.width = '0%';
-  progPct.textContent = '0%';
-  sourceDurationSec = null;
-
-  // Same pattern as loadFFmpeg(): if the worker thread crashes/traps, that error can
-  // surface on window instead of rejecting our await, so we listen for both.
-  const onWinError = (ev) => log('window error selama konversi: ' + describeError(ev));
-  const onRejection = (ev) => log('unhandled rejection selama konversi: ' + describeError(ev));
-  window.addEventListener('error', onWinError);
-  window.addEventListener('unhandledrejection', onRejection);
-  startStallWatch();
-
-  try{
+async function ensureSourceWritten(){
+  if(!sourceWrittenToFS){
+    log(`menulis ${sourceName} ke memori ffmpeg…`);
     await ffmpeg.writeFile(sourceName, await fetchFile(sourceFile));
-    const fmt = document.getElementById('fmt').value;
-    const outName = 'output.' + fmt;
-    const args = buildArgs(outName);
-
-    progText.textContent = 'menjalankan ffmpeg…';
-    await ffmpeg.exec(args);
-
-    progText.textContent = 'selesai';
-    const data = await ffmpeg.readFile(outName);
-    const blob = new Blob([data.buffer], {type: fmt === 'avi' ? 'video/x-msvideo' : 'video/mp4'});
-    const url = URL.createObjectURL(blob);
-
-    lastOutputName = outName;
-    addOutputItem(outName, blob.size, url);
-
-    splitBtn.disabled = false;
-  }catch(e){
-    log('error: ' + describeError(e));
-    progText.textContent = 'gagal — lihat log';
-    // Errors like "RuntimeError: memory access out of bounds" are WASM traps that leave the
-    // ffmpeg worker permanently wedged (known upstream ffmpeg.wasm behavior) — retrying without
-    // resetting will just reproduce the same crash, so surface the recovery option right away.
-    showRecoveryPrompt();
-  }finally{
-    stopStallWatch();
-    window.removeEventListener('error', onWinError);
-    window.removeEventListener('unhandledrejection', onRejection);
-    runBtn.disabled = false;
+    sourceWrittenToFS = true;
   }
-});
-
-function addOutputItem(name, size, url, label){
-  outputPanel.style.display = 'block';
-  const item = document.createElement('div');
-  item.className = 'output-item';
-  item.innerHTML = `
-    <div>
-      <div class="name">${label || name}</div>
-      <div class="meta">${(size/1024/1024).toFixed(2)} MB</div>
-    </div>
-    <a href="${url}" download="${name}">unduh</a>
-  `;
-  outputList.appendChild(item);
 }
-
-// ---------- split ----------
-splitBtn.addEventListener('click', async () => {
-  if(!lastOutputName) return;
-  splitBtn.disabled = true;
-  progWrap.classList.add('show');
-  progText.textContent = 'membaca durasi…';
-
-  const onWinError = (ev) => log('window error selama split: ' + describeError(ev));
-  const onRejection = (ev) => log('unhandled rejection selama split: ' + describeError(ev));
-  window.addEventListener('error', onWinError);
-  window.addEventListener('unhandledrejection', onRejection);
-  startStallWatch();
-
-  try{
-    // probe duration by decoding metadata via a quick pass logged to console
-    let durationSec = await probeDuration(lastOutputName);
-    if(!durationSec){
-      log('tidak bisa deteksi durasi otomatis, masukkan manual di prompt');
-      durationSec = parseFloat(prompt('Durasi video (detik)?', '30'));
-    }
-    const parts = parseInt(document.getElementById('splitCount').value, 10) || 5;
-    const per = durationSec / parts;
-    const fmt = lastOutputName.split('.').pop();
-
-    for(let i=0;i<parts;i++){
-      const ss = (i*per).toFixed(2);
-      const partName = `part${i+1}.${fmt}`;
-      progText.textContent = `memotong bagian ${i+1}/${parts}…`;
-      const args = ['-ss', String(ss), '-i', lastOutputName, '-t', per.toFixed(2), '-c', 'copy', partName];
-      await ffmpeg.exec(args);
-      markActivity();
-      const data = await ffmpeg.readFile(partName);
-      const blob = new Blob([data.buffer], {type: fmt === 'avi' ? 'video/x-msvideo' : 'video/mp4'});
-      const url = URL.createObjectURL(blob);
-      addOutputItem(partName, blob.size, url, `Bagian ${i+1}/${parts}`);
-    }
-    progText.textContent = 'split selesai';
-  }catch(e){
-    log('split error: ' + describeError(e));
-    progText.textContent = 'split gagal — lihat log';
-    showRecoveryPrompt();
-  }finally{
-    stopStallWatch();
-    window.removeEventListener('error', onWinError);
-    window.removeEventListener('unhandledrejection', onRejection);
-    splitBtn.disabled = false;
-  }
-});
 
 async function probeDuration(name){
   return new Promise((resolve) => {
@@ -938,6 +891,154 @@ async function probeDuration(name){
     });
   });
 }
+
+function addOutputItem(name, size, url, label){
+  outputPanel.style.display = 'block';
+  const item = document.createElement('div');
+  item.className = 'output-item';
+  item.innerHTML = `
+    <div>
+      <div class="name">${label || name}</div>
+      <div class="meta">${(size/1024/1024).toFixed(2)} MB</div>
+    </div>
+    <a href="${url}" download="${name}">unduh</a>
+  `;
+  outputList.appendChild(item);
+}
+
+// ---------- STEP 02: split the raw source BEFORE conversion ----------
+// Runs on the untouched source file via stream copy (-c copy). No decoding/re-encoding of
+// the whole thing happens here, so this step alone is cheap even for a very large file —
+// it's what lets step 03 below only ever hold one small piece in memory at a time.
+splitBtn.addEventListener('click', async () => {
+  if(!sourceFile || !loaded) return;
+  splitBtn.disabled = true;
+  runBtn.disabled = true;
+  progWrap.classList.add('show');
+  progText.textContent = 'menyiapkan file sumber…';
+  progFill.style.width = '0%';
+  progPct.textContent = '0%';
+  sourceDurationSec = null;
+
+  const onWinError = (ev) => log('window error selama split: ' + describeError(ev));
+  const onRejection = (ev) => log('unhandled rejection selama split: ' + describeError(ev));
+  window.addEventListener('error', onWinError);
+  window.addEventListener('unhandledrejection', onRejection);
+  startStallWatch();
+
+  try{
+    await ensureSourceWritten();
+    log('memotong file sumber SEBELUM konversi (stream copy), supaya langkah konversi berikutnya tidak perlu memuat seluruh video besar sekaligus ke memori…');
+
+    progText.textContent = 'membaca durasi sumber…';
+    let durationSec = await probeDuration(sourceName);
+    if(!durationSec){
+      log('tidak bisa deteksi durasi otomatis, masukkan manual di prompt');
+      durationSec = parseFloat(prompt('Durasi video sumber (detik)?', '30'));
+    }
+
+    const parts = parseInt(document.getElementById('splitCount').value, 10) || 5;
+    const per = durationSec / parts;
+    const newSplitParts = [];
+
+    // clear any previously listed split/converted outputs so the list reflects the new split
+    outputList.innerHTML = '';
+    outputPanel.style.display = 'none';
+
+    for(let i=0;i<parts;i++){
+      const ss = (i*per).toFixed(2);
+      const partName = `srcpart${i+1}.${sourceExt}`; // internal ffmpeg FS name
+      const downloadName = `${sourceBaseName}_part${i+1}.${sourceExt}`; // user-facing filename
+      progText.textContent = `memotong sumber — bagian ${i+1}/${parts}…`;
+      const args = ['-ss', String(ss), '-i', sourceName, '-t', per.toFixed(2), '-c', 'copy', partName];
+      await ffmpeg.exec(args);
+      markActivity();
+      const data = await ffmpeg.readFile(partName);
+      const blob = new Blob([data.buffer]);
+      const url = URL.createObjectURL(blob);
+      newSplitParts.push({name: partName, downloadName});
+      addOutputItem(downloadName, blob.size, url, `${downloadName} (belum dikonversi)`);
+    }
+
+    splitParts = newSplitParts;
+    updateConvertModeNote();
+    progText.textContent = `split selesai — ${parts} bagian siap dikonversi satu per satu di langkah 03`;
+  }catch(e){
+    log('split error: ' + describeError(e));
+    progText.textContent = 'split gagal — lihat log';
+    showRecoveryPrompt();
+  }finally{
+    stopStallWatch();
+    window.removeEventListener('error', onWinError);
+    window.removeEventListener('unhandledrejection', onRejection);
+    updateRunEnabled();
+  }
+});
+
+// ---------- STEP 03: convert (each split part separately, or whole source as fallback) ----------
+runBtn.addEventListener('click', async () => {
+  if(!sourceFile || !loaded) return;
+  runBtn.disabled = true;
+  splitBtn.disabled = true;
+  progWrap.classList.add('show');
+  progFill.style.width = '0%';
+  progPct.textContent = '0%';
+
+  const onWinError = (ev) => log('window error selama konversi: ' + describeError(ev));
+  const onRejection = (ev) => log('unhandled rejection selama konversi: ' + describeError(ev));
+  window.addEventListener('error', onWinError);
+  window.addEventListener('unhandledrejection', onRejection);
+  startStallWatch();
+
+  try{
+    let jobs;
+    if(splitParts.length > 0){
+      jobs = splitParts.map(p => p.name);
+    } else {
+      // fallback: no split done, convert the whole source file in one shot (same behavior
+      // as before, still fine for smaller files).
+      await ensureSourceWritten();
+      jobs = [sourceName];
+    }
+
+    const fmt = document.getElementById('fmt').value;
+
+    for(let i=0;i<jobs.length;i++){
+      const inputName = jobs[i];
+      const outName = jobs.length > 1 ? `outpart${i+1}.${fmt}` : `output.${fmt}`; // internal ffmpeg FS name
+      const downloadName = jobs.length > 1
+        ? `${sourceBaseName}_part${i+1}.${fmt}`
+        : `${sourceBaseName}.${fmt}`; // user-facing filename
+      sourceDurationSec = null; // reset per-job progress baseline
+      progText.textContent = jobs.length > 1
+        ? `mengonversi bagian ${i+1}/${jobs.length}…`
+        : 'menjalankan ffmpeg…';
+
+      const args = buildArgs(inputName, outName);
+      await ffmpeg.exec(args);
+      markActivity();
+
+      const data = await ffmpeg.readFile(outName);
+      const blob = new Blob([data.buffer], {type: fmt === 'avi' ? 'video/x-msvideo' : 'video/mp4'});
+      const url = URL.createObjectURL(blob);
+      addOutputItem(downloadName, blob.size, url, jobs.length > 1 ? `${downloadName} — hasil konversi bagian ${i+1}/${jobs.length}` : downloadName);
+    }
+
+    progText.textContent = jobs.length > 1 ? `semua ${jobs.length} bagian selesai dikonversi` : 'selesai';
+  }catch(e){
+    log('error: ' + describeError(e));
+    progText.textContent = 'gagal — lihat log';
+    // Errors like "RuntimeError: memory access out of bounds" are WASM traps that leave the
+    // ffmpeg worker permanently wedged (known upstream ffmpeg.wasm behavior) — retrying without
+    // resetting will just reproduce the same crash, so surface the recovery option right away.
+    showRecoveryPrompt();
+  }finally{
+    stopStallWatch();
+    window.removeEventListener('error', onWinError);
+    window.removeEventListener('unhandledrejection', onRejection);
+    updateRunEnabled();
+  }
+});
 </script>
 </body>
 </html>
