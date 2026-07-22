@@ -414,15 +414,38 @@
 
 let ffmpeg = null;
 
-async function toBlobURL(url, mimeType){
-  const resp = await fetch(url);
+async function fetchWithTimeout(url, ms = 20000, retries = 2){
+  for(let attempt = 1; attempt <= retries + 1; attempt++){
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), ms);
+    try{
+      const resp = await fetch(url, { signal: controller.signal });
+      clearTimeout(timer);
+      if(!resp.ok) throw new Error(`HTTP ${resp.status} saat mengambil ${url}`);
+      return resp;
+    }catch(err){
+      clearTimeout(timer);
+      const isTimeout = err.name === 'AbortError';
+      if(attempt <= retries){
+        loadLogMsg(`${isTimeout ? 'timeout' : 'gagal'} mengambil ${url.split('/').pop()}, mencoba ulang (${attempt}/${retries})…`);
+        continue;
+      }
+      throw new Error(`${isTimeout ? `Timeout (${ms/1000}s)` : 'Gagal'} mengambil ${url} setelah ${retries+1}x percobaan${isTimeout ? '' : ': ' + err.message}`);
+    }
+  }
+}
+
+async function toBlobURL(url, mimeType, timeoutMs){
+  const resp = await fetchWithTimeout(url, timeoutMs ?? 20000);
   const body = await resp.blob();
+  if(body.size === 0) throw new Error(`File kosong (0 byte) diterima dari ${url}`);
   const blob = new Blob([body], { type: mimeType });
   return URL.createObjectURL(blob);
 }
 async function toBlobURLPatched(url, mimeType, patcher){
-  const resp = await fetch(url);
+  const resp = await fetchWithTimeout(url);
   let body = await resp.text();
+  if(body.length === 0) throw new Error(`File kosong (0 byte) diterima dari ${url}`);
   if(patcher) body = patcher(body);
   const blob = new Blob([body], { type: mimeType });
   return URL.createObjectURL(blob);
@@ -431,7 +454,7 @@ async function fetchFile(input){
   if(typeof input !== 'string'){
     return new Uint8Array(await input.arrayBuffer());
   }
-  const resp = await fetch(input);
+  const resp = await fetchWithTimeout(input);
   const buffer = await resp.arrayBuffer();
   return new Uint8Array(buffer);
 }
@@ -529,8 +552,8 @@ async function loadFFmpeg(){
   window.addEventListener('error', onWinError);
   window.addEventListener('unhandledrejection', onRejection);
   try{
-    const baseURLFFMPEG = 'https://unpkg.com/@ffmpeg/ffmpeg@0.12.6/dist/umd';
-    const baseURLCore = 'https://unpkg.com/@ffmpeg/core@0.12.3/dist/umd';
+    const baseURLFFMPEG = 'https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.6/dist/umd';
+    const baseURLCore = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.3/dist/umd';
 
     setLoadStep(10, 'mengunduh & menambal ffmpeg.js…');
     const ffmpegBlobURL = await toBlobURLPatched(
@@ -551,7 +574,7 @@ async function loadFFmpeg(){
     const coreURL = await toBlobURL(`${baseURLCore}/ffmpeg-core.js`, 'text/javascript');
 
     setLoadStep(85, 'mengunduh ffmpeg-core.wasm (~30MB)…');
-    const wasmURL = await toBlobURL(`${baseURLCore}/ffmpeg-core.wasm`, 'application/wasm');
+    const wasmURL = await toBlobURL(`${baseURLCore}/ffmpeg-core.wasm`, 'application/wasm', 60000);
 
     setLoadStep(95, 'menginisialisasi core ffmpeg…');
     await withTimeout(
