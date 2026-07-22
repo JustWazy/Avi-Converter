@@ -410,9 +410,11 @@
 
 </div>
 
-<script type="module">
-import { FFmpeg } from "https://esm.sh/@ffmpeg/ffmpeg@0.12.10";
-import { fetchFile, toBlobURL } from "https://esm.sh/@ffmpeg/util@0.12.1";
+<script src="https://unpkg.com/@ffmpeg/util@0.12.1/dist/umd/index.js"></script>
+<script src="https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js"></script>
+<script>
+const { FFmpeg } = FFmpegWASM;
+const { fetchFile, toBlobURL } = FFmpegUtil;
 
 const ffmpeg = new FFmpeg();
 const reelStatus = document.getElementById('reelStatus');
@@ -471,8 +473,8 @@ function setLoadStep(pct, text){
 async function loadFFmpeg(){
   try{
     setLoadStep(5, 'menghubungi CDN unpkg.com…');
-    const baseURL = "https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm";
-    const workerURL = "https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/esm/worker.js";
+    const baseURL = "https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd";
+    const workerURL = "https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/umd/worker.js";
 
     setLoadStep(20, 'mengunduh ffmpeg-core.js…');
     const coreURL = await toBlobURL(`${baseURL}/ffmpeg-core.js`, "text/javascript");
