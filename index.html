@@ -499,7 +499,7 @@ async function loadFFmpeg(){
       setLoadStep(45, 'mengunduh ffmpeg-core.wasm (lokal, ~30MB)…');
       wasmURL = await toBlobURL(`${localBase}/ffmpeg-core.wasm`, "application/wasm");
       setLoadStep(70, 'menyiapkan worker (lokal)…');
-      classWorkerURL = `${localBase}/worker.js`;
+      classWorkerURL = new URL(`${localBase}/worker.js`, window.location.href).href;
     } else {
       loadLogMsg('file lokal tidak ditemukan, fallback ke CDN unpkg.com');
       setLoadStep(10, 'menghubungi CDN unpkg.com…');
