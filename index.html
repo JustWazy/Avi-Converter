@@ -410,8 +410,8 @@
 
 </div>
 
-<script src="https://unpkg.com/@ffmpeg/util@0.12.1/dist/umd/index.js"></script>
-<script src="https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js"></script>
+<script src="./vendor/ffmpeg/util.js"></script>
+<script src="./vendor/ffmpeg/ffmpeg.js"></script>
 <script>
 const { FFmpeg } = FFmpegWASM;
 const { fetchFile, toBlobURL } = FFmpegUtil;
@@ -470,26 +470,57 @@ function setLoadStep(pct, text){
   loadLogMsg(text);
 }
 
+async function urlExists(url){
+  try{
+    const res = await fetch(url, {method:'HEAD'});
+    return res.ok;
+  }catch{ return false; }
+}
+
+function withTimeout(promise, ms, label){
+  return Promise.race([
+    promise,
+    new Promise((_, rej) => setTimeout(() => rej(new Error(`Timeout (${ms/1000}s) menunggu: ${label}`)), ms))
+  ]);
+}
+
 async function loadFFmpeg(){
   try{
-    setLoadStep(5, 'menghubungi CDN unpkg.com…');
-    const baseURL = "https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd";
-    const workerURL = "https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/umd/worker.js";
+    setLoadStep(5, 'mengecek file lokal (vendor/ffmpeg)…');
+    const localBase = './vendor/ffmpeg';
+    const useLocal = await urlExists(`${localBase}/ffmpeg-core.js`);
 
-    setLoadStep(20, 'mengunduh ffmpeg-core.js…');
-    const coreURL = await toBlobURL(`${baseURL}/ffmpeg-core.js`, "text/javascript");
-    loadLogMsg('ffmpeg-core.js selesai diunduh');
+    let coreURL, wasmURL, classWorkerURL;
 
-    setLoadStep(45, 'mengunduh ffmpeg-core.wasm (~30MB, bisa agak lama)…');
-    const wasmURL = await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, "application/wasm");
-    loadLogMsg('ffmpeg-core.wasm selesai diunduh');
+    if(useLocal){
+      loadLogMsg('file lokal ditemukan, memuat same-origin (paling stabil)');
+      setLoadStep(20, 'mengunduh ffmpeg-core.js (lokal)…');
+      coreURL = await toBlobURL(`${localBase}/ffmpeg-core.js`, "text/javascript");
+      setLoadStep(45, 'mengunduh ffmpeg-core.wasm (lokal, ~30MB)…');
+      wasmURL = await toBlobURL(`${localBase}/ffmpeg-core.wasm`, "application/wasm");
+      setLoadStep(70, 'menyiapkan worker (lokal)…');
+      classWorkerURL = `${localBase}/worker.js`;
+    } else {
+      loadLogMsg('file lokal tidak ditemukan, fallback ke CDN unpkg.com');
+      setLoadStep(10, 'menghubungi CDN unpkg.com…');
+      const baseURL = "https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm";
+      const workerURL = "https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/esm/worker.js";
 
-    setLoadStep(75, 'mengunduh worker.js…');
-    const classWorkerURL = await toBlobURL(workerURL, "text/javascript");
-    loadLogMsg('worker.js selesai diunduh');
+      setLoadStep(25, 'mengunduh ffmpeg-core.js…');
+      coreURL = await toBlobURL(`${baseURL}/ffmpeg-core.js`, "text/javascript");
+      setLoadStep(50, 'mengunduh ffmpeg-core.wasm (~30MB, bisa agak lama)…');
+      wasmURL = await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, "application/wasm");
+      setLoadStep(75, 'mengunduh worker.js…');
+      classWorkerURL = await toBlobURL(workerURL, "text/javascript");
+      loadLogMsg('peringatan: mode CDN kadang macet karena worker.js butuh file pendukung (const.js) yang tidak ikut ter-bundle — kalau macet di langkah berikut, gunakan setup lokal (lihat instruksi)');
+    }
 
     setLoadStep(90, 'menginisialisasi core ffmpeg…');
-    await ffmpeg.load({ coreURL, wasmURL, classWorkerURL });
+    await withTimeout(
+      ffmpeg.load({ coreURL, wasmURL, classWorkerURL }),
+      25000,
+      'inisialisasi core ffmpeg'
+    );
 
     setLoadStep(100, 'ffmpeg siap digunakan');
     loaded = true;
@@ -502,6 +533,7 @@ async function loadFFmpeg(){
     loadStepText.textContent = 'gagal — lihat log di bawah';
     loadFill.style.background = 'var(--danger)';
     loadLogMsg('ERROR: ' + e.message);
+    loadLogMsg('Saran: worker.js dari CDN sering putus karena butuh const.js di folder yang sama. Host file ffmpeg secara lokal di repo kamu (folder vendor/ffmpeg) — lihat instruksi setup.');
     log('load error: ' + e.message);
   }
 }
