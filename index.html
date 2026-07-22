@@ -484,7 +484,30 @@ function withTimeout(promise, ms, label){
   ]);
 }
 
+function describeError(e){
+  try{
+    const parts = [];
+    if(e && e.message) parts.push('message: ' + e.message);
+    if(e && e.name) parts.push('name: ' + e.name);
+    if(e && e.filename) parts.push('filename: ' + e.filename);
+    if(e && e.lineno) parts.push('line: ' + e.lineno);
+    if(e && e.error && e.error.message) parts.push('inner: ' + e.error.message);
+    if(e && e.reason) parts.push('reason: ' + (e.reason && e.reason.message ? e.reason.message : JSON.stringify(e.reason)));
+    if(e && e.stack) parts.push('stack: ' + String(e.stack).split('\n').slice(0,3).join(' | '));
+    if(parts.length === 0){
+      try{ parts.push('raw: ' + JSON.stringify(e)); }catch{ parts.push('raw: ' + String(e)); }
+    }
+    return parts.join(' — ');
+  }catch{
+    return String(e);
+  }
+}
+
 async function loadFFmpeg(){
+  const onWinError = (ev) => loadLogMsg('window error: ' + describeError(ev));
+  const onRejection = (ev) => loadLogMsg('unhandled rejection: ' + describeError(ev));
+  window.addEventListener('error', onWinError);
+  window.addEventListener('unhandledrejection', onRejection);
   try{
     setLoadStep(5, 'mengecek file lokal (vendor/ffmpeg)…');
     const localBase = './vendor/ffmpeg';
@@ -532,9 +555,13 @@ async function loadFFmpeg(){
     reelText.textContent = 'gagal memuat ffmpeg';
     loadStepText.textContent = 'gagal — lihat log di bawah';
     loadFill.style.background = 'var(--danger)';
-    loadLogMsg('ERROR: ' + e.message);
-    loadLogMsg('Saran: worker.js dari CDN sering putus karena butuh const.js di folder yang sama. Host file ffmpeg secara lokal di repo kamu (folder vendor/ffmpeg) — lihat instruksi setup.');
-    log('load error: ' + e.message);
+    loadLogMsg('ERROR DETAIL: ' + describeError(e));
+    console.error('ffmpeg load error (full object):', e);
+    loadLogMsg('Cek juga tab Console browser (F12) untuk detail objek error lengkap.');
+    log('load error: ' + describeError(e));
+  }finally{
+    window.removeEventListener('error', onWinError);
+    window.removeEventListener('unhandledrejection', onRejection);
   }
 }
 loadFFmpeg();
