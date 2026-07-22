@@ -485,20 +485,48 @@ let sourceName = 'input.mp4';
 let lastOutputName = null;
 let lastOutputDuration = null;
 
+let sourceDurationSec = null;
+
+function timeToSec(str){
+  const m = str.match(/(\d+):(\d+):(\d+\.?\d*)/);
+  if(!m) return null;
+  return (+m[1])*3600 + (+m[2])*60 + parseFloat(m[3]);
+}
+
 function log(msg){
   logBox.classList.add('show');
   const d = document.createElement('div');
   d.textContent = msg;
   logBox.appendChild(d);
   logBox.scrollTop = logBox.scrollHeight;
+
+  // fallback progress: parse "Duration: HH:MM:SS.ms" then "time=HH:MM:SS.ms" from log text,
+  // since ffmpeg.wasm's 'progress' event doesn't always fire reliably.
+  const durMatch = msg.match(/Duration:\s*(\d+:\d+:\d+\.?\d*)/);
+  if(durMatch){
+    sourceDurationSec = timeToSec(durMatch[1]);
+  }
+  const timeMatch = msg.match(/time=\s*(\d+:\d+:\d+\.?\d*)/);
+  if(timeMatch && sourceDurationSec){
+    const cur = timeToSec(timeMatch[1]);
+    if(cur !== null){
+      const pct = Math.min(100, Math.max(0, Math.round((cur / sourceDurationSec) * 100)));
+      progFill.style.width = pct + '%';
+      progPct.textContent = pct + '%';
+      progText.textContent = `memproses… (${timeMatch[1]} / ${new Date(sourceDurationSec*1000).toISOString().substr(11,8)})`;
+    }
+  }
 }
 
 function attachFFmpegListeners(){
   ffmpeg.on('log', ({message}) => log(message));
   ffmpeg.on('progress', ({progress}) => {
-    const pct = Math.min(100, Math.max(0, Math.round(progress*100)));
-    progFill.style.width = pct + '%';
-    progPct.textContent = pct + '%';
+    // only trust this if it's a sane 0-1 value; ffmpeg.wasm sometimes emits garbage (e.g. huge numbers)
+    if(progress >= 0 && progress <= 1){
+      const pct = Math.min(100, Math.max(0, Math.round(progress*100)));
+      progFill.style.width = pct + '%';
+      progPct.textContent = pct + '%';
+    }
   });
 }
 
@@ -706,6 +734,7 @@ runBtn.addEventListener('click', async () => {
   progText.textContent = 'menulis file ke memori…';
   progFill.style.width = '0%';
   progPct.textContent = '0%';
+  sourceDurationSec = null;
 
   try{
     await ffmpeg.writeFile(sourceName, await fetchFile(sourceFile));
