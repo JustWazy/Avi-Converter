@@ -410,13 +410,31 @@
 
 </div>
 
-<script src="./vendor/ffmpeg/util.js"></script>
-<script src="./vendor/ffmpeg/ffmpeg.js"></script>
 <script>
-const { FFmpeg } = FFmpegWASM;
-const { fetchFile, toBlobURL } = FFmpegUtil;
 
-const ffmpeg = new FFmpeg();
+let ffmpeg = null;
+
+async function toBlobURL(url, mimeType){
+  const resp = await fetch(url);
+  const body = await resp.blob();
+  const blob = new Blob([body], { type: mimeType });
+  return URL.createObjectURL(blob);
+}
+async function toBlobURLPatched(url, mimeType, patcher){
+  const resp = await fetch(url);
+  let body = await resp.text();
+  if(patcher) body = patcher(body);
+  const blob = new Blob([body], { type: mimeType });
+  return URL.createObjectURL(blob);
+}
+async function fetchFile(input){
+  if(typeof input !== 'string'){
+    return new Uint8Array(await input.arrayBuffer());
+  }
+  const resp = await fetch(input);
+  const buffer = await resp.arrayBuffer();
+  return new Uint8Array(buffer);
+}
 const reelStatus = document.getElementById('reelStatus');
 const reelText = document.getElementById('reelText');
 const logBox = document.getElementById('logBox');
@@ -443,12 +461,14 @@ function log(msg){
   logBox.scrollTop = logBox.scrollHeight;
 }
 
-ffmpeg.on('log', ({message}) => log(message));
-ffmpeg.on('progress', ({progress}) => {
-  const pct = Math.min(100, Math.max(0, Math.round(progress*100)));
-  progFill.style.width = pct + '%';
-  progPct.textContent = pct + '%';
-});
+function attachFFmpegListeners(){
+  ffmpeg.on('log', ({message}) => log(message));
+  ffmpeg.on('progress', ({progress}) => {
+    const pct = Math.min(100, Math.max(0, Math.round(progress*100)));
+    progFill.style.width = pct + '%';
+    progPct.textContent = pct + '%';
+  });
+}
 
 const loadPanel = document.getElementById('loadPanel');
 const loadFill = document.getElementById('loadFill');
@@ -509,39 +529,34 @@ async function loadFFmpeg(){
   window.addEventListener('error', onWinError);
   window.addEventListener('unhandledrejection', onRejection);
   try{
-    setLoadStep(5, 'mengecek file lokal (vendor/ffmpeg)…');
-    const localBase = './vendor/ffmpeg';
-    const useLocal = await urlExists(`${localBase}/ffmpeg-core.js`);
+    const baseURLFFMPEG = 'https://unpkg.com/@ffmpeg/ffmpeg@0.12.6/dist/umd';
+    const baseURLCore = 'https://unpkg.com/@ffmpeg/core@0.12.3/dist/umd';
 
-    let coreURL, wasmURL, classWorkerURL;
+    setLoadStep(10, 'mengunduh & menambal ffmpeg.js…');
+    const ffmpegBlobURL = await toBlobURLPatched(
+      `${baseURLFFMPEG}/ffmpeg.js`,
+      'text/javascript',
+      (js) => js.replace('new URL(e.p+e.u(814),e.b)', 'r.workerLoadURL')
+    );
 
-    if(useLocal){
-      loadLogMsg('file lokal ditemukan, memuat same-origin (paling stabil)');
-      setLoadStep(20, 'mengunduh ffmpeg-core.js (lokal)…');
-      coreURL = await toBlobURL(`${localBase}/ffmpeg-core.js`, "text/javascript");
-      setLoadStep(45, 'mengunduh ffmpeg-core.wasm (lokal, ~30MB)…');
-      wasmURL = await toBlobURL(`${localBase}/ffmpeg-core.wasm`, "application/wasm");
-      setLoadStep(70, 'menyiapkan worker (lokal)…');
-      classWorkerURL = new URL(`${localBase}/worker.js`, window.location.href).href;
-    } else {
-      loadLogMsg('file lokal tidak ditemukan, fallback ke CDN unpkg.com');
-      setLoadStep(10, 'menghubungi CDN unpkg.com…');
-      const baseURL = "https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm";
-      const workerURL = "https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/esm/worker.js";
+    setLoadStep(30, 'memuat pustaka ffmpeg…');
+    await import(ffmpegBlobURL);
+    ffmpeg = new FFmpegWASM.FFmpeg();
+    attachFFmpegListeners();
 
-      setLoadStep(25, 'mengunduh ffmpeg-core.js…');
-      coreURL = await toBlobURL(`${baseURL}/ffmpeg-core.js`, "text/javascript");
-      setLoadStep(50, 'mengunduh ffmpeg-core.wasm (~30MB, bisa agak lama)…');
-      wasmURL = await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, "application/wasm");
-      setLoadStep(75, 'mengunduh worker.js…');
-      classWorkerURL = await toBlobURL(workerURL, "text/javascript");
-      loadLogMsg('peringatan: mode CDN kadang macet karena worker.js butuh file pendukung (const.js) yang tidak ikut ter-bundle — kalau macet di langkah berikut, gunakan setup lokal (lihat instruksi)');
-    }
+    setLoadStep(45, 'mengunduh worker chunk (814.ffmpeg.js)…');
+    const workerLoadURL = await toBlobURL(`${baseURLFFMPEG}/814.ffmpeg.js`, 'text/javascript');
 
-    setLoadStep(90, 'menginisialisasi core ffmpeg…');
+    setLoadStep(65, 'mengunduh ffmpeg-core.js…');
+    const coreURL = await toBlobURL(`${baseURLCore}/ffmpeg-core.js`, 'text/javascript');
+
+    setLoadStep(85, 'mengunduh ffmpeg-core.wasm (~30MB)…');
+    const wasmURL = await toBlobURL(`${baseURLCore}/ffmpeg-core.wasm`, 'application/wasm');
+
+    setLoadStep(95, 'menginisialisasi core ffmpeg…');
     await withTimeout(
-      ffmpeg.load({ coreURL, wasmURL, classWorkerURL }),
-      25000,
+      ffmpeg.load({ workerLoadURL, coreURL, wasmURL }),
+      30000,
       'inisialisasi core ffmpeg'
     );
 
