@@ -381,6 +381,12 @@
     <div class="progwrap" id="progWrap">
       <div class="progbar"><div id="progFill"></div></div>
       <div class="proglabel"><span id="progText">memproses…</span><span id="progPct">0%</span></div>
+      <div class="proglabel" id="stallWarning" style="display:none;color:var(--danger);">
+        <span>⚠ tidak ada aktivitas selama beberapa saat — worker mungkin macet/crash</span>
+      </div>
+      <div class="btnrow" id="recoverRow" style="display:none;margin-top:10px;">
+        <button id="recoverBtn">Reset ffmpeg &amp; muat ulang</button>
+      </div>
     </div>
     <div class="log" id="logBox"></div>
   </div>
@@ -478,6 +484,9 @@ const runBtn = document.getElementById('runBtn');
 const splitBtn = document.getElementById('splitBtn');
 const outputPanel = document.getElementById('outputPanel');
 const outputList = document.getElementById('outputList');
+const stallWarning = document.getElementById('stallWarning');
+const recoverRow = document.getElementById('recoverRow');
+const recoverBtn = document.getElementById('recoverBtn');
 
 let loaded = false;
 let sourceFile = null;
@@ -487,6 +496,70 @@ let lastOutputDuration = null;
 
 let sourceDurationSec = null;
 
+// ---------- stall watchdog ----------
+// ffmpeg.exec() gives no guarantee it will ever resolve/reject if the worker thread
+// itself dies (OOM, WASM trap, mobile browser suspending a background worker, etc).
+// Rather than let the UI sit frozen forever with no signal, we track the last time we
+// heard *anything* from the worker (a log line or a progress tick) and surface a warning
+// + recovery option if that goes quiet for too long while a job is supposedly running.
+const STALL_MS = 20000; // no activity for this long while "running" => flag as stalled
+let lastActivityTs = 0;
+let stallTimer = null;
+let isProcessing = false;
+
+function markActivity(){
+  lastActivityTs = Date.now();
+  hideStallUI();
+}
+
+function startStallWatch(){
+  stopStallWatch(); // clear any previous interval first
+  isProcessing = true;
+  markActivity();
+  stallTimer = setInterval(() => {
+    if(!isProcessing) return;
+    const idleFor = Date.now() - lastActivityTs;
+    if(idleFor > STALL_MS){
+      showRecoveryPrompt();
+    }
+  }, 3000);
+}
+
+function stopStallWatch(){
+  isProcessing = false;
+  if(stallTimer){ clearInterval(stallTimer); stallTimer = null; }
+}
+
+function hideStallUI(){
+  stallWarning.style.display = 'none';
+  recoverRow.style.display = 'none';
+}
+
+function showRecoveryPrompt(){
+  stallWarning.style.display = 'flex';
+  recoverRow.style.display = 'flex';
+}
+
+recoverBtn.addEventListener('click', async () => {
+  recoverBtn.disabled = true;
+  hideStallUI();
+  log('mengakhiri worker ffmpeg yang macet dan memuat ulang instance baru…');
+  try{
+    ffmpeg.terminate();
+  }catch(e){
+    log('terminate() gagal (kemungkinan worker sudah mati): ' + describeError(e));
+  }
+  loaded = false;
+  reelStatus.classList.remove('live');
+  reelText.textContent = 'memuat ulang ffmpeg…';
+  stopStallWatch();
+  progText.textContent = 'ffmpeg direset — menunggu inisialisasi ulang…';
+  runBtn.disabled = true;
+  splitBtn.disabled = true;
+  await loadFFmpeg();
+  recoverBtn.disabled = false;
+});
+
 function timeToSec(str){
   const m = str.match(/(\d+):(\d+):(\d+\.?\d*)/);
   if(!m) return null;
@@ -494,6 +567,7 @@ function timeToSec(str){
 }
 
 function log(msg){
+  markActivity();
   logBox.classList.add('show');
   const d = document.createElement('div');
   d.textContent = msg;
@@ -521,6 +595,7 @@ function log(msg){
 function attachFFmpegListeners(){
   ffmpeg.on('log', ({message}) => log(message));
   ffmpeg.on('progress', ({progress}) => {
+    markActivity();
     // only trust this if it's a sane 0-1 value; ffmpeg.wasm sometimes emits garbage (e.g. huge numbers)
     if(progress >= 0 && progress <= 1){
       const pct = Math.min(100, Math.max(0, Math.round(progress*100)));
@@ -685,10 +760,17 @@ function buildFilterChain(){
   const w = document.getElementById('w').value;
   const h = document.getElementById('h').value;
   const orient = document.getElementById('orient').value;
-  let base = `scale=${w}:${h}`;
+  const base = `scale=${w}:${h}`;
   if(orient === 'none') return base;
   if(orient === 'single') return `${base},transpose=2,vflip`;
-  return `${base},transpose=2,vflip,scale=${w}:${h},transpose=2,vflip`;
+  // "double" preset: some firmware needs the transpose+vflip pair applied twice.
+  // BUG FIX: the old chain re-inserted `scale=W:H` between the two passes. By that point
+  // the frame had already been transposed once (dims swapped to HxW), so re-forcing it to
+  // WxH stretched/distorted the image (this is why output came out as 128x160 instead of
+  // 160x128, and why swscale logged "deprecated pixel format" warnings twice). Two transposes
+  // already return the frame to its original WxH on their own — no mid-chain rescale needed.
+  // This also removes a whole extra scale pass, cutting per-frame filter cost significantly.
+  return `${base},transpose=2,vflip,transpose=2,vflip`;
 }
 
 function buildArgs(outName){
@@ -736,6 +818,14 @@ runBtn.addEventListener('click', async () => {
   progPct.textContent = '0%';
   sourceDurationSec = null;
 
+  // Same pattern as loadFFmpeg(): if the worker thread crashes/traps, that error can
+  // surface on window instead of rejecting our await, so we listen for both.
+  const onWinError = (ev) => log('window error selama konversi: ' + describeError(ev));
+  const onRejection = (ev) => log('unhandled rejection selama konversi: ' + describeError(ev));
+  window.addEventListener('error', onWinError);
+  window.addEventListener('unhandledrejection', onRejection);
+  startStallWatch();
+
   try{
     await ffmpeg.writeFile(sourceName, await fetchFile(sourceFile));
     const fmt = document.getElementById('fmt').value;
@@ -755,9 +845,16 @@ runBtn.addEventListener('click', async () => {
 
     splitBtn.disabled = false;
   }catch(e){
-    log('error: ' + e.message);
+    log('error: ' + describeError(e));
     progText.textContent = 'gagal — lihat log';
+    // Errors like "RuntimeError: memory access out of bounds" are WASM traps that leave the
+    // ffmpeg worker permanently wedged (known upstream ffmpeg.wasm behavior) — retrying without
+    // resetting will just reproduce the same crash, so surface the recovery option right away.
+    showRecoveryPrompt();
   }finally{
+    stopStallWatch();
+    window.removeEventListener('error', onWinError);
+    window.removeEventListener('unhandledrejection', onRejection);
     runBtn.disabled = false;
   }
 });
@@ -783,6 +880,12 @@ splitBtn.addEventListener('click', async () => {
   progWrap.classList.add('show');
   progText.textContent = 'membaca durasi…';
 
+  const onWinError = (ev) => log('window error selama split: ' + describeError(ev));
+  const onRejection = (ev) => log('unhandled rejection selama split: ' + describeError(ev));
+  window.addEventListener('error', onWinError);
+  window.addEventListener('unhandledrejection', onRejection);
+  startStallWatch();
+
   try{
     // probe duration by decoding metadata via a quick pass logged to console
     let durationSec = await probeDuration(lastOutputName);
@@ -800,6 +903,7 @@ splitBtn.addEventListener('click', async () => {
       progText.textContent = `memotong bagian ${i+1}/${parts}…`;
       const args = ['-ss', String(ss), '-i', lastOutputName, '-t', per.toFixed(2), '-c', 'copy', partName];
       await ffmpeg.exec(args);
+      markActivity();
       const data = await ffmpeg.readFile(partName);
       const blob = new Blob([data.buffer], {type: fmt === 'avi' ? 'video/x-msvideo' : 'video/mp4'});
       const url = URL.createObjectURL(blob);
@@ -807,9 +911,13 @@ splitBtn.addEventListener('click', async () => {
     }
     progText.textContent = 'split selesai';
   }catch(e){
-    log('split error: ' + e.message);
+    log('split error: ' + describeError(e));
     progText.textContent = 'split gagal — lihat log';
+    showRecoveryPrompt();
   }finally{
+    stopStallWatch();
+    window.removeEventListener('error', onWinError);
+    window.removeEventListener('unhandledrejection', onRejection);
     splitBtn.disabled = false;
   }
 });
