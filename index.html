@@ -282,6 +282,13 @@
     </div>
   </header>
 
+  <div class="panel" data-idx="00 — inisialisasi" id="loadPanel">
+    <h2>Memuat ffmpeg.wasm</h2>
+    <div class="progbar"><div id="loadFill"></div></div>
+    <div class="proglabel"><span id="loadStepText">menghubungi CDN…</span><span id="loadPct">0%</span></div>
+    <div class="log show" id="loadLog"></div>
+  </div>
+
   <div class="sprockets">
     <div></div><div></div><div></div><div></div><div></div><div></div><div></div><div></div><div></div><div></div>
   </div>
@@ -441,21 +448,58 @@ ffmpeg.on('progress', ({progress}) => {
   progPct.textContent = pct + '%';
 });
 
+const loadPanel = document.getElementById('loadPanel');
+const loadFill = document.getElementById('loadFill');
+const loadPct = document.getElementById('loadPct');
+const loadStepText = document.getElementById('loadStepText');
+const loadLog = document.getElementById('loadLog');
+
+function loadLogMsg(msg){
+  const d = document.createElement('div');
+  const t = new Date().toLocaleTimeString('id-ID', {hour12:false});
+  d.textContent = `[${t}] ${msg}`;
+  loadLog.appendChild(d);
+  loadLog.scrollTop = loadLog.scrollHeight;
+}
+function setLoadStep(pct, text){
+  loadFill.style.width = pct + '%';
+  loadPct.textContent = pct + '%';
+  loadStepText.textContent = text;
+  loadLogMsg(text);
+}
+
 async function loadFFmpeg(){
   try{
+    setLoadStep(5, 'menghubungi CDN unpkg.com…');
     const baseURL = "https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm";
     const workerURL = "https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/esm/worker.js";
-    await ffmpeg.load({
-      coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, "text/javascript"),
-      wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, "application/wasm"),
-      classWorkerURL: await toBlobURL(workerURL, "text/javascript"),
-    });
+
+    setLoadStep(20, 'mengunduh ffmpeg-core.js…');
+    const coreURL = await toBlobURL(`${baseURL}/ffmpeg-core.js`, "text/javascript");
+    loadLogMsg('ffmpeg-core.js selesai diunduh');
+
+    setLoadStep(45, 'mengunduh ffmpeg-core.wasm (~30MB, bisa agak lama)…');
+    const wasmURL = await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, "application/wasm");
+    loadLogMsg('ffmpeg-core.wasm selesai diunduh');
+
+    setLoadStep(75, 'mengunduh worker.js…');
+    const classWorkerURL = await toBlobURL(workerURL, "text/javascript");
+    loadLogMsg('worker.js selesai diunduh');
+
+    setLoadStep(90, 'menginisialisasi core ffmpeg…');
+    await ffmpeg.load({ coreURL, wasmURL, classWorkerURL });
+
+    setLoadStep(100, 'ffmpeg siap digunakan');
     loaded = true;
     reelStatus.classList.add('live');
     reelText.textContent = 'ffmpeg siap';
     updateRunEnabled();
+    setTimeout(() => { loadPanel.style.display = 'none'; }, 900);
   }catch(e){
-    reelText.textContent = 'gagal memuat ffmpeg — cek koneksi';
+    reelText.textContent = 'gagal memuat ffmpeg';
+    loadStepText.textContent = 'gagal — lihat log di bawah';
+    loadFill.style.background = 'var(--danger)';
+    loadLogMsg('ERROR: ' + e.message);
     log('load error: ' + e.message);
   }
 }
