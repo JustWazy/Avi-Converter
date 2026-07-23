@@ -813,7 +813,7 @@ function buildFilterChain(){
   // including the mid-chain re-scale. Do not "simplify" this to a single scale + two
   // transpose/vflip passes even though that looks equivalent — the firmware check depends
   // on the exact chain below, so it must stay byte-for-byte the same.
-  return `${base},transpose=2,vflip,${base},transpose=2,vflip`;
+  return `${base},transpose=2,vflip,${base},transpose=3,vflip`;
 }
 
 // inputName/outName are explicit now because convert can run against either the raw
