@@ -350,7 +350,7 @@
       </div>
       <div class="field">
         <label>MJPEG quality (q:v)</label>
-        <input type="number" id="qv" value="2" min="1" max="31">
+        <input type="number" id="qv" value="5" min="1" max="31">
       </div>
       <div class="field">
         <label>Audio sample rate</label>
@@ -378,11 +378,15 @@
         <label>Orientasi</label>
         <select id="orient">
           <option value="double" selected>Flip ganda (firmware ketat)</option>
+          <option value="double-rev">Flip ganda — arah render dibalik</option>
           <option value="single">Flip sekali (normal)</option>
+          <option value="single-rev">Flip sekali — arah render dibalik</option>
           <option value="none">Tanpa flip</option>
         </select>
       </div>
     </div>
+
+    <p class="note" id="orientNote" style="display:none;"></p>
 
     <label class="toggle-row">
       <input type="checkbox" id="trimToggle">
@@ -503,6 +507,7 @@ const stallWarning = document.getElementById('stallWarning');
 const recoverRow = document.getElementById('recoverRow');
 const recoverBtn = document.getElementById('recoverBtn');
 const convertModeNote = document.getElementById('convertModeNote');
+const orientNote = document.getElementById('orientNote');
 
 let loaded = false;
 let sourceFile = null;
@@ -643,7 +648,7 @@ function loadLogMsg(msg){
   const t = new Date().toLocaleTimeString('id-ID', {hour12:false});
   d.textContent = `[${t}] ${msg}`;
   loadLog.appendChild(d);
-  loadLog.scrollTop = loadLog.scrollHeight;
+  loadLog.scrollTop = loadLog.scrollTop = loadLog.scrollHeight;
 }
 function setLoadStep(pct, text){
   loadFill.style.width = pct + '%';
@@ -800,6 +805,22 @@ document.getElementById('trimToggle').addEventListener('change', e=>{
 });
 document.getElementById('ss').addEventListener('input', updateCmdPreview);
 document.getElementById('tt').addEventListener('input', updateCmdPreview);
+document.getElementById('orient').addEventListener('change', updateOrientNote);
+
+function updateOrientNote(){
+  const orient = document.getElementById('orient').value;
+  const msgs = {
+    'double-rev': 'Varian eksperimen dari mode "flip ganda": pass pertama identik dengan "flip ganda" asli, tapi pass kedua tidak pakai hflip. Karena dua pass yang identik saling meniadakan sempurna, menyisakan hflip di salah satu pass saja menghasilkan mirror kiri-kanan murni — TANPA ikut membalik atas-bawah, tanpa rotasi tambahan. Chain "flip ganda" asli TIDAK diubah — ini opsi terpisah. Kalau firmware kamu strict-validate terhadap chain literal, jangan pakai varian ini untuk device produksi tanpa tes dulu.',
+    'single-rev': 'Sama seperti "flip sekali", tapi hflip-nya dihilangkan — hasilnya rotasi 90° yang sama persis, cuma sisi kiri-kanan konten tertukar (mirror horizontal murni terhadap mode "flip sekali" biasa).'
+  };
+  if(msgs[orient]){
+    orientNote.style.display = 'block';
+    orientNote.innerHTML = msgs[orient];
+  } else {
+    orientNote.style.display = 'none';
+  }
+}
+updateOrientNote();
 
 function buildFilterChain(){
   const w = document.getElementById('w').value;
@@ -807,13 +828,28 @@ function buildFilterChain(){
   const orient = document.getElementById('orient').value;
   const base = `scale=${w}:${h}`;
   if(orient === 'none') return base;
-  if(orient === 'single') return `${base},transpose=2,vflip`;
-  // "double" preset: required EXACTLY as-is (scale,transpose,vflip,scale,transpose,vflip) —
-  // this specific strict firmware validates the output against this literal filter chain,
-  // including the mid-chain re-scale. Do not "simplify" this to a single scale + two
-  // transpose/vflip passes even though that looks equivalent — the firmware check depends
-  // on the exact chain below, so it must stay byte-for-byte the same.
-  return `${base},transpose=2,vflip,${base},transpose=3,vflip`;
+  if(orient === 'single') return `${base},transpose=2,hflip`;
+  // single-rev: same rotation as "single", but WITHOUT the hflip — dropping it (rather than
+  // reordering it before transpose) is what gives a clean horizontal mirror of "single"'s result:
+  // same 90° rotation, just the left/right side swapped, no extra rotation introduced.
+  if(orient === 'single-rev') return `${base},transpose=2`;
+  if(orient === 'double') {
+    // "double" preset: required EXACTLY as-is (scale,transpose,vflip,scale,transpose,vflip) —
+    // this specific strict firmware validates the output against this literal filter chain,
+    // including the mid-chain re-scale. Do not "simplify" this to a single scale + two
+    // transpose/vflip passes even though that looks equivalent — the firmware check depends
+    // on the exact chain below, so it must stay byte-for-byte the same.
+    return `${base},transpose=2,hflip,${base},transpose=2,hflip`;
+  }
+  // double-rev: dropping the hflip from just the SECOND pass (instead of adding/swapping flips
+  // on both passes) is what actually gives a clean net effect here. The two 90° transposes still
+  // combine to a 180° rotation either way — what changes is whether the leftover single hflip
+  // cancels that rotation down to a pure horizontal mirror (this version, 1 hflip total) or not
+  // (0 or 2 hflips total both collapse to no mirror / full 180° rotation instead, which is why
+  // both earlier attempts — matching hflip on both passes, or vflip+hflip — were wrong: identical
+  // pairs always cancel, and mismatched flip AXES add an unwanted rotation instead of a mirror).
+  // Kept as a SEPARATE branch from "double" above so the strict-firmware chain is never touched.
+  return `${base},transpose=2,hflip,${base},transpose=2`;
 }
 
 // inputName/outName are explicit now because convert can run against either the raw
